@@ -73,7 +73,7 @@ def GetStocksByTS(curs, price, year, month, day):
 
 	buying_stocks 	= []
 	tickers_list 	= []
-	query = "select stocks_price.* from (select timestamp from stocks_price where close < {close} and vol > 0 and timestamp > {ts} ORDER BY timestamp LIMIT 1) as tblTS inner join stocks_price on stocks_price.timestamp = tblTS.timestamp where stocks_price.close < {close} and stocks_price.vol > 0".format(close=price,ts=unixtime)
+	query = "select stocks_price.* from (select timestamp from stocks_price where close > {low} and close < {high} and vol > 0 and timestamp > {ts} ORDER BY timestamp LIMIT 1) as tblTS inner join stocks_price on stocks_price.timestamp = tblTS.timestamp where stocks_price.close > {low} and stocks_price.close < {high} and stocks_price.vol > 0".format(low=price[0],high=price[1],ts=unixtime)
 	# print(query)
 	curs.execute(query)
 	rows = curs.fetchall()
@@ -182,7 +182,7 @@ def GetMAX(ticker):
 		})
 	return hist
 
-def Run(start, stop, sell_interval):
+def Run(start, stop, info, sell_interval):
 	global g_exit
 	# Calculate running months
 	months = (stop["year"] - start["year"]) * 12 + (stop["month"] - start["month"])
@@ -197,9 +197,14 @@ def Run(start, stop, sell_interval):
 	#row_3 = []
 	#row_4 = []
 	#prev_tickers = None
-	year 	= start["year"]
-	month 	= start["month"]
-	day 	= start["day"]
+	year 		= start["year"]
+	month 		= start["month"]
+	day 		= start["day"]
+	sell_year 	= 0
+	sell_month 	= info["months"] / 12
+	sum_investment = 0
+	sum_earnings = 0
+	sum_earnings_investment = 0
 	for idx in range(months):
 		if month > 12:
 			month = 1
@@ -215,11 +220,21 @@ def Run(start, stop, sell_interval):
 		above_dollar 	= []
 
 		print("({0}\{1}) {2:.4g}%".format(idx,months,float(idx/months)*100.0))
-		print("({0}\{1}) Get (BUY) stocks ...".format(idx,months))
-		stocks, tickers = GetClosestStocks(curs,1,year,month,day)
+		print("({0}\{1}) Buy stocks for date {2}-{3}-{4}".format(idx,months,year,month,day))
+		stocks, tickers = GetClosestStocks(curs,[0,1],year,month,day)
 		print("({0}\{1}) Total ammount of stocks ({2})".format(idx,months,len(stocks)))
 		investment_date = "{0}_{1}_{2}".format(year,month,day)
-		earning_date 	= "{0}_{1}_{2}".format(year+1,month,day)
+
+		sell_year = info["years"]
+		if (12 - month < info["months"] % 12):
+			sell_year  = 1 + int(info["months"] / 12)
+			sell_month = (month + (info["months"] % 12)) % 12
+		else:
+			#sell_year = int(info["months"] / 12)
+			sell_month = month + info["months"]
+
+		earning_date = "{0}_{1}_{2}".format((year+sell_year),sell_month,day)
+		print("({0}\{1}) Sell stocks for date {2}-{3}-{4}".format(idx,months,(year+sell_year),sell_month,day))
 
 		#if prev_tickers is not None:
 		#	for item in prev_tickers:
@@ -239,14 +254,12 @@ def Run(start, stop, sell_interval):
 				return
 			
 			if stock["ticker"] not in invested_tickers: # Remove duplication
-				#if stock["price"] > 0: # Stock cannot be negative
 				invested_tickers.append(stock["ticker"])
 				investment += stock["price"]
 				# Get stock from future
-				stock_e = GetClosestStock(curs,stock["ticker"],year+1,month,day)
+				stock_e = GetClosestStock(curs,stock["ticker"],year+sell_year,sell_month,day)
 				if stock_e is not None: # Stock exist
 					# Append to earnings
-					#print("+{0}",format(stock_e["price"]))
 					earnings += stock_e["price"]
 					if stock_e["price"] > float(10 * stock["price"]):
 						print("[WARRNING] Ticker: {0}, Investment: {1} Earning: {2}".format(stock["ticker"], stock["price"], stock_e["price"]))
@@ -254,12 +267,11 @@ def Run(start, stop, sell_interval):
 				else: # STock does not exist (migght be bankropsy)
 					print("-{0}",format(stock["price"]))
 					earnings -= stock["price"]
-				#else:
-				#	print("[ERROR] Stock price is NEGATIVE - Ticker: {0}, Price: {1}".format(stock["ticker"], stock["price"]))
-			
-				investment += stock["price"]
-		print("({0}\{1}) Invested ({2}) Earned ({3})".format(idx,months,investment,earnings))
-		csv += "{0},{1},{2},{3},{4},{5}\n".format(month, investment, earnings, investment_date, earning_date, anomaly_tickers)
+		sum_investment += investment
+		sum_earnings += earnings
+		sum_earnings_investment += earnings-investment
+		print("({0}\{1}) Invested ({2}) Vs. Earned ({3})".format(idx,months,investment,earnings))
+		csv += "{0},{1},{2},{3},{4},{5},{6},{7}\n".format(month, investment, earnings, earnings-investment,len(stocks), investment_date, earning_date, anomaly_tickers)
 		
 		#row_1.append(investment)
 		#row_2.append(earnings)
@@ -270,6 +282,7 @@ def Run(start, stop, sell_interval):
 	conn.close()
 
 	path = os.path.join("output","investment_vs_earnnings.csv")
+	csv += "{0},{1},{2},{3},{4}\n".format("", sum_investment, sum_earnings, sum_earnings_investment, ((sum_earnings - sum_investment) / sum_investment)*100)
 	Save(path,csv)
 
 def main():
@@ -289,13 +302,18 @@ def main():
 			print("{0}\t{1:.2f} \t {2:.2f}".format(stock["date"],stock["open"],stock["close"]))
 	else:
 		Run({
-			"year": 2005,
+			"year": 2015,
 			"month": 1,
 			"day": 1
 		},{
 			"year": 2019,
 			"month": 12,
 			"day": 1
+		}, 
+		{
+			"years": 0,
+			"months": 3,
+			"prices_range": [0,1]
 		}, 1)
 
 if __name__ == "__main__":
